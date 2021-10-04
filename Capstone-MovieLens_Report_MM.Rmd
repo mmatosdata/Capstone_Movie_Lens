@@ -1,0 +1,754 @@
+---
+title: "MovieLens EDX Capstone Project Report"
+author: 'Author: MM'
+date: "9/29/2021"
+output:
+  
+  pdf_document: 
+    latex_engine: lualatex
+    toc: yes
+  html_document: default
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+
+This is a report for the capstone project required to obtain the EDX Data Science Professional Certification issued by HarvardX.
+
+The aim was to create a movie recommendation system using a subset of the MovieLens data set, limited to 10 million records.
+
+I have divided the  resulting data set in two portions:   
+
+* edx -  I used this as my training set
+* validation - I used this as my test set
+
+I documented the project through the following files:
+
+- An Rmd file report detailing the methodology applied, 
+- A PDF report (issued from the Rmd file above mentioned), and 
+- An R script file that generates the  predicted movie ratings and calculates the root-mean-square error (RMSE).
+
+
+```{r loading_to_knit_env, include=FALSE}
+#this codes run in the background to upload the last saved image of the evironment built with the associared R script for this project
+set.seed(1, sample.kind="Rounding")
+load("Capstone-MovieLens_Report_MM.RData")
+library(tidyverse)
+library(caret)
+library(data.table)
+library(skimr)
+library(randomForest)
+library(corrplot)
+library(knitr)
+```
+
+
+## Results
+
+The following table shows the final results obtained with the various models:
+
+```{r ini_results excution, eval=T, echo=T}
+rmse_results %>% knitr::kable()
+```
+
+Please note that the approx_accuracy is a derived calculation from the Guessing_benchmark1 to illustrate the meaning of change on RMSE.  It does not represent a direct comparison of the actual and predicted ratings.
+
+## Methodology
+
+## Libraries
+The following libraries are required for proper execution of the R script file:
+```{r libraries,  eval=F, echo=T}
+
+library(plyr)
+library(tidyverse)
+library(caret)
+library(data.table)
+library(stringr)
+library(knitr)
+library(purrr)
+library(skimr)
+library(randomForest)
+library(corrplot)
+library(rpart)
+library(brnn)
+library(monomvn)
+```
+
+
+## Creating the dataset
+
+The following code was provided by EDX as part of the project requirements and introduction. I applied this code to generate the data set used in the project.
+
+```{r data, eval=F, echo=T}
+##########################################################
+# Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# MovieLens 10M data set:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+
+## Data Exploration
+
+I performed the following data exploration steps:
+
+* Understanding the training and test datasets:
+```{r explore1}
+str(edx)
+str(validation)
+```
+
+*Obtaining descriptive statistics for each column in the training data set
+```{r skim,  eval=F, echo=T}
+skimmed <- skim(edx)
+```
+
+```{r skim excution, eval=T, echo=T}
+skimmed[, c(1:4, 8:17)]
+```
+
+* Ratings distribution
+```{r rating_dist, eval=T, echo=T}
+edx %>% 
+  group_by(rating) %>% 
+  summarise (count = n() ) %>% 
+  rename("Rating"=rating, "Frequency"=count) %>% 
+  mutate("%"=paste(round(100*Frequency/nrow(edx),2),"%",sep="")) %>% 
+  knitr::kable( align = "lcr")
+```
+
+* Movies with more ratings
+
+```{r top_dist, eval=T, echo=T}
+edx %>% 
+  group_by(title) %>% 
+  summarise (count =n() ) %>% 
+  ungroup() %>% top_n(.,10) %>% 
+  rename("# of ratings"=count) %>% 
+  knitr::kable()
+```
+
+
+* Evidence that there are movies with low number of ratings
+```{r bottom_dist, eval=T, echo=T}
+edx %>% 
+  group_by(title) %>% 
+  summarise (count =n() ) %>% 
+  ungroup() %>% top_n(.,-10) %>% 
+  tail( .,10)  %>% 
+    rename("# of ratings"=count) %>% 
+  knitr::kable()
+```
+
+* Top active users
+```{r top_active_users, eval=T, echo=T}
+edx %>% 
+  group_by(userId) %>% 
+  summarise (count =n() ) %>% 
+  ungroup() %>% top_n(.,10) %>% 
+  rename("# of ratings"=count) %>% 
+  knitr::kable(align = "lr")
+```
+
+* Less active users
+```{r less_active_users, eval=T, echo=T}
+edx %>% 
+  group_by(userId) %>% 
+  summarise (count =n() ) %>% 
+  ungroup() %>% top_n(.,-10) %>% 
+  tail( .,10)  %>% 
+  rename("# of ratings"=count) %>% 
+  knitr::kable(align = "lr")
+```
+
+* Identifying release year to be use as possible predictor
+```{r release_year, eval=T, echo=T}
+edx <- edx %>% mutate(release_year = as.numeric(str_extract(str_extract(title, "[/(]\\d{4}[/)]$"), regex("\\d{4}"))))
+
+edx %>% ggplot() + geom_histogram(aes(release_year))
+```
+
+* ratings values available
+```{r rating_values, eval=T, echo=T}
+unique(edx$rating)
+```
+
+
+## Benchmarking: two methods
+
+As starting point I created two basic models that serve as benchmark:
+
+* Guessing the account: this method uses a categorical approach towards the rating and allows to establish a baseline for overall accuracy to aid interpretability of the results. The benchmark would approximate the proportion of categories available in the rating as the probability of guessing the outcome.
+
+* Naive model: this method provide a more realistic benchmark for the RMSE and is based on assigning the overall average rating to all the predictions. 
+
+Also a table to collect the results of the various models and allow comparison was created:
+
+```{r benchmark,  eval=F, echo=T}
+#defining a function for RMSE
+
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+}
+
+# guessing the outcome - benchmark1
+y_hat_guess <- sample(c(seq(0.5,5, by=0.5)), length(validation$rating), replace = TRUE)
+acc_guessing <-mean(y_hat_guess == validation$rating)
+guess_rmse <- RMSE(validation$rating, y_hat_guess)
+
+#naive model:  average rate for all - benchmark 2
+
+mu_hat <- mean(edx$rating)
+naive_rmse <- RMSE(validation$rating, mu_hat)
+acc_naive <- 1 - ((naive_rmse*(1-acc_guessing))/guess_rmse)
+
+#creating table that will store all results
+
+rmse_results <- data_frame(method = "Guessing_benchmark1", 
+                           RMSE = guess_rmse, 
+                           approx_accuracy= acc_guessing)
+
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Simple_Average_benchmark2",
+                                     RMSE = naive_rmse, approx_accuracy= acc_naive ))
+
+```
+
+## Preprocessing: Encoding character variables
+
+I used the Helmert method to encode character variables into numerical vectors for use in the model.  Helmert encoding is a form of contrast encoding where each value of a categorical variable is compared to the mean of the subsequent levels. I have added a column to the output of the encode_helmert function below to obtain unique encoded items for each value of the variables "genres" and "title",  and  then merged it back to the training data set. 
+
+```{r encoding,  eval=F, echo=T}
+#defining the encoding function
+helmert <- function(n) {
+  m <- t((diag(seq(n-1, 0)) - upper.tri(matrix(1, n, n)))[-n,])
+  t(apply(m, 1, rev))
+}
+encode_helmert <- function(df, var) {
+  x <- df[[var]]
+  x <- unique(x)
+  n <- length(x)
+  d <- as.data.frame(helmert(n))
+  d[[var]] <- rev(x)
+  names(d) <- c(paste0(var, 1:(n-1)), var)
+  d
+}
+
+#genres encoding
+d <- encode_helmert(edx, "genres")
+
+d <- d %>% mutate(genres_encoded = rowSums(d[,-797]))
+
+#verifying that all items have unique encoding for genres column
+length(unique(d$genres_encoded))
+
+#merging
+edx <- inner_join(edx,d[,c("genres","genres_encoded")], by= "genres")
+
+#title encoding
+d <- encode_helmert(edx, "title")
+
+d <- d %>% mutate(title_encoded = rowSums(d[,-10676]))
+
+#verifying that all items have unique encoding for title column
+length(unique(d$title_encoded))
+
+#merging
+edx <- inner_join(edx,d[,c("title","title_encoded")], by= "title")
+)
+```
+
+```{r ammended edx, eval=T, echo=T}
+head(edx)
+```
+
+
+## Preprocessing: converting all the numeric variables to range between 0 and 1
+
+```{r convert1,  eval=F, echo=T}
+#transforming the data for numeric predictors only
+preProcess_range_model <- preProcess(edx[,-c("rating","genres","title")], method='range')
+
+new_edx <- predict(preProcess_range_model, newdata = edx[,-c("rating","genres","title")])
+
+#verifying that limits of potential predictors are between 0 and 1
+apply(new_edx, 2, FUN=function(x){c('min'=min(x), 'max'=max(x))})
+
+#exploring the new and old edx datasets
+head(new_edx)
+head(edx)
+
+#ensuring that there is no alteration of unique items
+length(unique(new_edx$userId))
+length(unique(edx$userId))
+
+#appending ratings and character variables
+edx$userId_stand <- new_edx$userId
+edx$movieId_stand <- new_edx$movieId
+edx$timestamp_stand <- new_edx$timestamp
+edx$genres_encoded_stand <- new_edx$genres_encoded
+edx$title_encoded_stand <- new_edx$title_encoded
+edx$release_year_stand <- new_edx$release_year
+
+#removing new_edx and redundant columns in edx to preserve memory
+rm(new_edx)
+edx <- edx[,-c("genres_encoded", "title_encoded" )]
+
+
+```
+
+```{r convert2,  eval=T, echo=T}
+#exploring the amended edx data set
+head(edx[,1:13])
+```
+
+
+
+## Visualising the improtance of variables
+
+The following plot shows the correlation between potential predictors:
+
+```{r corr1,  eval=F, echo=T}
+cor_edx <- edx[,8:13] %>% cor() 
+```
+
+```{r corr2,  eval=T, echo=T}
+corrplot(cor_edx, method="number",type= "full",insig = "blank", number.cex = 0.6)
+
+```
+
+The above graphic seems to indicate that most predictors are independent.  A positive cor relation between MovieId and title_encoded is noted.  This is logical as both the movieId and title represent the particular movie. Therefore, one of these variables could be excluded from the model.  The release year is also slightly correlated to the movieId, which is a logical association.
+
+There is a slight positive correlation between movieId and timestamp, but there is no indication of causality. 
+
+* Variability:
+
+I intended to identify variability within the various predictors when grouped by rating category.   A box plot comparison helps to identify changes in the mean between categories for each potential predictor, as an indicator that the predictor could have a significant effect in predicting the rating.  A bar plot helps visualising the variability among categories for each predictor.
+
+Due to large data size and to aid processing time, I have extracted random samples of the pre-processed data and plotted it using the rating field as a categorical variable.
+
+```{r visual1,  eval=T, echo=T}
+sample_n(edx[,c(8:13,3)],100000) %>% 
+  pivot_longer( userId_stand:release_year_stand ) %>% 
+  group_by(as.factor(rating)) %>%  
+  filter(n()>=100) %>% ggplot() +
+  geom_boxplot(aes(as.factor(rating),value)) +
+  facet_wrap(vars(name))
+
+```
+
+```{r visual2,  eval=T, echo=T}
+sample_n(edx[,c(8:13,3)],100000) %>% 
+  pivot_longer( userId_stand:release_year_stand ) %>% 
+  group_by(as.factor(rating)) %>%  
+  filter(n()>=100) %>% ggplot() +
+  geom_col(aes(as.factor(rating),value)) +
+  facet_wrap(vars(name))
+
+```
+
+From the above charts, the following was noted:
+
+* An unusual variation for ratings with half star was noted in relation to those with full stars (e.g. 0.5 vs 1 star). 
+
+* From the box plot it doesn't appear that significant variability in the means exist for the remaining predictors.  However, looking at the distribution of the ratings in the bar plots: user effect, genre effect and title effect may exist.
+
+* MovieId and title distributions are not the same. This might indicate a distortion in the data coming from the encoding pre-processing step. However, it might also indicate an effect of words within the titles that may influence users rating decisions.    
+
+
+## Quantifying variance influence and ranking variables
+
+To evaluate the importance of the variables I performed an analysis of the effect of each variable over the variation between average rating and rating grouped by each variable.
+
+```{r rfe1,  eval=F, echo=T}
+#user effect
+length(unique(edx$userId))
+
+user_effect <-edx %>% group_by(userId) %>%
+  summarise( mean_uId = mean(rating), 
+             u_effect = mean(mu_hat - mean_uId )) 
+
+edx <- left_join(edx, user_effect[,c(1,3)])
+
+ranking_vars <- data.frame( var = "user_effect_mean" , value= mean(user_effect$u_effect))
+
+rm(user_effect)
+
+#movie effect (using movie ID  discarding title as its correlated)
+length(unique(edx$movieId))
+
+movie_effect <-edx %>% group_by(movieId) %>% 
+  summarize( mean_mId = mean(rating), 
+             m_effect = mean(mu_hat - mean_mId - u_effect))  
+
+edx <- left_join(edx, movie_effect[,c(1,3)])
+
+ranking_vars <- bind_rows(ranking_vars, 
+                          data_frame(var = "movie_effect_mean" , 
+                                     value= mean(movie_effect$m_effect)))
+
+rm(movie_effect)
+
+#released year effect
+length(unique(edx$release_year))
+
+ry_effect <-edx %>% group_by(release_year) %>%
+  summarize( mean_ryId = mean(rating),  
+             ry_effect = mean(mu_hat- mean_ryId - u_effect  - m_effect ))  
+
+edx <- left_join(edx, ry_effect[,c(1,3)])
+
+ranking_vars <- bind_rows(ranking_vars, 
+                          data_frame(var = "ry_effect_mean" ,
+                                     value= mean(ry_effect$ry_effect)))
+
+rm(ry_effect)
+
+#genres year effect
+length(unique(edx$genres))
+
+genres_effect <-edx %>% group_by(genres) %>%
+  summarize( mean_grId = mean(rating),  
+             gr_effect = mean(mu_hat- mean_grId - u_effect  - m_effect - ry_effect))  
+
+edx <- left_join(edx, genres_effect[,c(1,3)])
+
+ranking_vars <- bind_rows(ranking_vars,
+                          data_frame(var = "genres_effect_mean" ,
+                                     value= mean(genres_effect$gr_effect)))
+
+rm(genres_effect)
+
+#timestamp effect not considered due to high carnality and no rational connection to ranking decision
+length(unique(edx$timestamp))
+
+```
+
+* visualising the relevance of the predictors
+
+```{r rfe2,  eval=T, echo=T}
+
+ranking_vars
+
+ranking_vars %>% ggplot(aes(x= "" , y=value, fill=var)) +  geom_bar (stat= "identity" , width=.5)
+
+```
+
+The above plot indicates that:
+
+*  Movie and user effects are the most significant predictors in the variation from the average rating. 
+
+* Released year and genres have a lower level of influence.
+
+* Please note that timestamp field was not considered due to high cardinality and no rational connecting the rating decision to the time when the rating was placed.
+
+
+## Model fitting
+
+### Linear model
+ 
+The above analysis indicates that the following predictors are relevant:
+
+* userId
+* movieId
+
+Exploratory analysis above indicated that there were movies with low number of ratings , while other movies were rated only once.  There were also very active users who rated several movies, while other less active rated only few movies.  
+
+This indicate a level of variability within these parameters that will cause a distortion in the estimated effects given that the mean estimated rated per movie and/or per user is not large enough to be reliable. Therefore,a regularisation technique is needed to fine tune the predictions, by penalising those predictions where the number of ratings is too low (and therefore the distortion between actual and predicted is larger) .
+
+The linear model construct can be expressed as follows:
+
+ <div align="center">  <b> y_hat = mu + m_effect + u_effect + other </b> </div> 
+
+where:
+
+* y_hat = predicted rating
+* mu = non-conditional average rating across the full data set
+* m_effect = the portion of the variation between the mu and the actual rating that can be explained by the movieId predictor
+* u_effect = the portion of the variation between the mu and the actual rating that can be explained by the movieId predictor
+* other = the portion of the variation between the mu and the actual rating where the cause is unidentified (i.e. noise) 
+
+The regularisation technique builds on refining the estimation of the root squared mean error as follows:
+
+* Normal RMSE:
+
+<b> <div align="center"> $\sum_{(y  - mu – m_(effect_) – u_(effect_))^{2}}$ </div> </b>
+
+* With Regularisation
+
+
+<b> <div align="center"> $\frac{1}{N}( \sum_{(y  - mu –  m_(effect_) – u_(effect_))^{2}} + \lambda(\sum_{b_m^{2}} + \sum_{b_u^{2}}))$ </div> </b>
+
+
+Where:
+
+* N = number of actual ratings
+* y =  actual rating
+* mu = non-conditional average rating across the full data set
+* m_effect = the portion of the variation between the mu and the actual rating that can be explained by the movieId predictor
+* u_effect = the portion of the variation between the mu and the actual rating that can be explained by the movieId predictor
+* λ = optimised adjusting factor linked to the number of ratings for the specific movies/user
+* b = the numbers of rating associated to a specific movie (m) or user (u)
+
+
+#### optimising the regularisation parameter
+
+```{r reg_lm1,  eval=F, echo=T}
+lambdas <- seq(0, 7, 0.5)
+
+reg_rmse <- sapply( lambdas, function(l){
+  mu_hat <- mean(edx$rating)
+  m <- edx %>%
+    group_by(movieId) %>%
+    summarize(reg_m_effect = sum(rating - mu_hat)/(n()+l))
+  u <- edx %>% 
+    left_join(m, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(reg_u_effect = sum(rating - reg_m_effect - mu_hat)/(n()+l))
+  predicted_ratings <- 
+    edx %>% 
+    left_join(m, by = "movieId") %>%
+    left_join(u, by = "userId") %>%
+    mutate(mu = mean(rating), y_hat = mu + reg_m_effect + reg_u_effect) %>%
+    .$y_hat
+  return(RMSE(predicted_ratings, edx$rating))
+})
+
+lambda <- lambdas[which.min(reg_rmse)]
+```
+
+
+```{r reg_lm2,  eval=T, echo=T, fig.align = 'left'}
+
+qplot(lambdas, reg_rmse)  
+
+lambda
+```
+
+#### predicting with regularised lineal model
+```{r reg_lm3,  eval=F, echo=T}
+reg_rmse_val <- lapply( lambda, function(l){
+  mu_hat <- mean(validation$rating)
+  m <- validation %>%
+    group_by(movieId) %>%
+    summarize(reg_m_effect = sum(rating - mu_hat)/(n()+l))
+  u <- validation %>% 
+    left_join(m, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(reg_u_effect = sum(rating - reg_m_effect - mu_hat)/(n()+l))
+  predicted_ratings <- 
+    validation %>% 
+    left_join(m, by = "movieId") %>%
+    left_join(u, by = "userId") %>%
+    mutate(mu = mean(rating), y_hat = mu + reg_m_effect + reg_u_effect) %>%
+    .$y_hat
+  return(RMSE(predicted_ratings, validation$rating))
+})
+
+reglm_naive <- 1 - ((as.numeric(reg_rmse_val)*(1-acc_guessing))/guess_rmse)
+
+rmse_results <- bind_rows(rmse_results,
+                          data_frame(method="Regularised_Lineal_Model",
+                                     RMSE = as.numeric(reg_rmse_val), approx_accuracy= reglm_naive ))
+
+```
+
+
+## Evaluating other possible models
+
+I performed a quick evaluation of other models using a random sample of 1000 records to determine the following:
+
+* Feasibility of use given run time
+* Potential RMSE results (based on the single sample, this estimating could have been improved using a montecarlo simulation if the model would have been considered appropriate)
+
+### Preparing the validation dataset
+
+Before evaluating models with the caret package, i prepared the validation data set as follows:
+
+```{r prep_val1,  eval=F, echo=T}
+
+#preparing the validation set: convert relevant numeric variables to range between 0 and 1 
+
+preProcess_range_model_val <- preProcess(validation[,-c("rating","genres","title")], method='range')
+new_val <- predict(preProcess_range_model_val, newdata = validation[,-c("rating","genres","title")])
+
+#verifying that limits of potential predictors are between 0 and 1
+apply(new_val, 2, FUN=function(x){c('min'=min(x), 'max'=max(x))})
+
+#appending standarised fields
+validation$userId_stand <- new_val$userId
+validation$movieId_stand <- new_val$movieId
+
+#exploding amended validation
+head(validation)
+
+rm(new_val)
+
+```
+
+### Considering the potential models
+
+I selected the following three (3) models that can be used for regression:
+
+* Bayesian Regularized Neural Networks (brnn)
+* Classification and Regression Trees (cart)
+* Bayesian Ridge Regression [Model Averaged] (brr) 
+
+
+I used the following code to estimate the run-time based on a sample of 1000 records:
+
+```{r eva_val1,  eval=F, echo=T}
+# setting the control parameters
+fitControl <- trainControl(
+  method = 'cv',                   
+  number = 2,                      
+  savePredictions = 'final',      
+    ) 
+
+
+# measuring run time for various models
+
+
+#Bayesian Regularized Neural Networks (method = 'brnn')
+
+brnn_grid <-  expand.grid(neurons = c(2, 3, 4))
+
+set.seed(100)
+
+startTime <- Sys.time()
+model_brnn = train(rating ~ userId_stand + movieId_stand , data=sample_n(edx,1000), method='brnn', metric='RMSE', 
+                   tuneGrid = brnn_grid, trControl = fitControl)
+endTime <- Sys.time()
+
+print(endTime - startTime)
+
+startTime <- Sys.time()
+predict(model_brnn, sample_n(validation,1000))
+endTime <- Sys.time()
+print(endTime - startTime)
+
+
+#CART (method = 'rpart2')
+
+cart_grid <-  expand.grid(maxdepth = c(2, 3, 4, 5))
+
+set.seed(100)
+
+startTime <- Sys.time()
+model_cart = train(rating ~ userId_stand + movieId_stand , data=sample_n(edx,1000), method='rpart2', 
+                   metric='RMSE', 
+                   tuneGrid = cart_grid, 
+                   trControl = fitControl)
+endTime <- Sys.time()
+
+print(endTime - startTime)
+
+startTime <- Sys.time()
+predict(model_cart, sample_n(validation,1000))
+endTime <- Sys.time()
+print(endTime - startTime)
+
+
+# Bayesian Ridge Regression (Model Averaged)   method = 'blassoAveraged'
+
+set.seed(100)
+
+startTime <- Sys.time()
+model_brr = train(rating ~ userId_stand + movieId_stand , data=sample_n(edx,1000), 
+                  method='blassoAveraged', metric='RMSE', 
+                  trControl = fitControl)
+endTime <- Sys.time()
+
+print(endTime - startTime)
+
+startTime <- Sys.time()
+predict(model_brr, sample_n(validation,1000))
+endTime <- Sys.time()
+print(endTime - startTime)
+
+#comparing sample models
+
+sample_models_compare <- resamples(list(brnn = model_brnn, 
+                                        cart = model_cart, 
+                                        brr = model_brr))
+
+```
+
+The estimated run-time in the full population was considered significant.  
+
+The following code shows the results of comparing the tested models
+```{r eva_val2,  eval=T, echo=T}
+
+# Summary of the sample models performances
+summary(sample_models_compare) 
+
+```
+
+```{r eva_val3,  eval=T, echo=T}
+
+# Using box plots to compare models
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+bwplot(sample_models_compare, scales=scales)
+
+```
+
+Given the significant run-time needed to apply the above models and the indication that there may not be an improvement in the RMSE in comparison to the Regularised Lineal Model, I decided not to implement these alternative models.
+
+
+## Reference
+
+The following material was used a reference:
+
+* [EDX course material](https://rafalab.github.io/dsbook/)
+
+* [Caret Package – A Practical Guide to Machine Learning in R](https://www.machinelearningplus.com/machine-learning/caret-package/#4howtovisualizetheimportanceofvariablesusingfeatureplot)
+
+* Helmert Encoding:  details on Helmert encoding can be found in [this StackOverlow answer](https://stats.stackexchange.com/questions/411134/how-to-calculate-helmert-coding) by user StatsStudent and the comments by user whuber.
+
+
+
+
+
+
+
+
