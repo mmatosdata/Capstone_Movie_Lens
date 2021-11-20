@@ -1,7 +1,7 @@
 ---
 title: "MovieLens EDX Capstone Project Report"
 author: 'Author: MM'
-date: "9/29/2021"
+date: "29 September 2021"
 output:
   
   pdf_document: 
@@ -35,7 +35,7 @@ I documented the project through the following files:
 
 
 ```{r loading_to_knit_env, include=FALSE}
-#this codes run in the background to upload the last saved image of the evironment built with the associared R script for this project
+#this codes run in the background to upload the last saved image of the environment built with the associated R script for this project
 set.seed(1, sample.kind="Rounding")
 load("Capstone-MovieLens_Report_MM.RData")
 library(tidyverse)
@@ -344,7 +344,7 @@ head(edx[,1:13])
 
 
 
-## Visualising the improtance of variables
+## Visualising the importance of variables
 
 The following plot shows the correlation between potential predictors:
 
